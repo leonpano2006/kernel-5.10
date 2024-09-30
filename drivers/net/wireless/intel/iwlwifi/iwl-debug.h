@@ -2,14 +2,9 @@
 /******************************************************************************
  *
  * Copyright(c) 2003 - 2014 Intel Corporation. All rights reserved.
- * Copyright(c) 2018 - 2020 Intel Corporation
+ * Copyright(c) 2018 - 2021 Intel Corporation
  *
  * Portions of this file are derived from the ipw3945 project.
- *
- * Contact Information:
- *  Intel Linux Wireless <linuxwifi@intel.com>
- * Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
- *
  *****************************************************************************/
 
 #ifndef __iwl_debug_h__
@@ -17,19 +12,25 @@
 
 #include "iwl-modparams.h"
 
-
 static inline bool iwl_have_debug_level(u32 level)
 {
-#ifdef CONFIG_IWLWIFI_DEBUG
+#ifdef CPTCFG_IWLWIFI_DEBUG
 	return iwlwifi_mod_params.debug_level & level;
 #else
 	return false;
 #endif
 }
 
+enum iwl_err_mode {
+	IWL_ERR_MODE_REGULAR,
+	IWL_ERR_MODE_RFKILL,
+	IWL_ERR_MODE_TRACE_ONLY,
+	IWL_ERR_MODE_RATELIMIT,
+};
+
 struct device;
-void __iwl_err(struct device *dev, bool rfkill_prefix, bool only_trace,
-		const char *fmt, ...) __printf(4, 5);
+void __iwl_err(struct device *dev, enum iwl_err_mode mode, const char *fmt, ...)
+	__printf(3, 4);
 void __iwl_warn(struct device *dev, const char *fmt, ...) __printf(2, 3);
 void __iwl_info(struct device *dev, const char *fmt, ...) __printf(2, 3);
 void __iwl_crit(struct device *dev, const char *fmt, ...) __printf(2, 3);
@@ -38,13 +39,24 @@ void __iwl_crit(struct device *dev, const char *fmt, ...) __printf(2, 3);
 #define CHECK_FOR_NEWLINE(f) BUILD_BUG_ON(f[sizeof(f) - 2] != '\n')
 
 /* No matter what is m (priv, bus, trans), this will work */
-#define IWL_ERR_DEV(d, f, a...)						\
+#define __IWL_ERR_DEV(d, mode, f, a...)					\
 	do {								\
 		CHECK_FOR_NEWLINE(f);					\
-		__iwl_err((d), false, false, f, ## a);			\
+		__iwl_err((d), mode, f, ## a);				\
 	} while (0)
+#define IWL_ERR_DEV(d, f, a...)						\
+	__IWL_ERR_DEV(d, IWL_ERR_MODE_REGULAR, f, ## a)
+#define IWL_WARN_DEV(d, f, a...)					\
+	do {								\
+		CHECK_FOR_NEWLINE(f);					\
+		__iwl_warn((d), f, ## a);				\
+	} while (0)
+#define IWL_ERR_DEV(d, f, a...)						\
+	__IWL_ERR_DEV(d, IWL_ERR_MODE_REGULAR, f, ## a)
 #define IWL_ERR(m, f, a...)						\
 	IWL_ERR_DEV((m)->dev, f, ## a)
+#define IWL_ERR_LIMIT(m, f, a...)					\
+	__IWL_ERR_DEV((m)->dev, IWL_ERR_MODE_RATELIMIT, f, ## a)
 #define IWL_WARN(m, f, a...)						\
 	do {								\
 		CHECK_FOR_NEWLINE(f);					\
@@ -61,7 +73,7 @@ void __iwl_crit(struct device *dev, const char *fmt, ...) __printf(2, 3);
 		__iwl_crit((m)->dev, f, ## a);				\
 	} while (0)
 
-#if defined(CONFIG_IWLWIFI_DEBUG) || defined(CONFIG_IWLWIFI_DEVICE_TRACING)
+#if defined(CPTCFG_IWLWIFI_DEBUG) || defined(CPTCFG_IWLWIFI_DEVICE_TRACING)
 void __iwl_dbg(struct device *dev,
 	       u32 level, bool limit, const char *function,
 	       const char *fmt, ...) __printf(5, 6);
@@ -91,7 +103,7 @@ do {									\
 #define IWL_DEBUG_LIMIT(m, level, fmt, args...)				\
 	__IWL_DEBUG_DEV((m)->dev, level, true, fmt, ##args)
 
-#ifdef CONFIG_IWLWIFI_DEBUG
+#ifdef CPTCFG_IWLWIFI_DEBUG
 #define iwl_print_hex_dump(m, level, p, len)				\
 do {                                            			\
 	if (iwl_have_debug_level(level))				\
@@ -100,7 +112,7 @@ do {                                            			\
 } while (0)
 #else
 #define iwl_print_hex_dump(m, level, p, len)
-#endif				/* CONFIG_IWLWIFI_DEBUG */
+#endif				/* CPTCFG_IWLWIFI_DEBUG */
 
 /*
  * To use the debug system:
@@ -119,10 +131,10 @@ do {                                            			\
  * The active debug levels can be accessed via files
  *
  *	/sys/module/iwlwifi/parameters/debug
- * when CONFIG_IWLWIFI_DEBUG=y.
+ * when CPTCFG_IWLWIFI_DEBUG=y.
  *
  *	/sys/kernel/debug/phy0/iwlwifi/debug/debug_level
- * when CONFIG_IWLWIFI_DEBUGFS=y.
+ * when CPTCFG_IWLWIFI_DEBUGFS=y.
  *
  */
 
