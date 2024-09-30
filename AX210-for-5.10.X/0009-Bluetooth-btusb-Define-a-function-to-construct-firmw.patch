@@ -1,0 +1,87 @@
+From cd4e4d891e1aa5c40ca2f3be4a003cb4ead9a1f1 Mon Sep 17 00:00:00 2001
+From: Kiran K <kiran.k@intel.com>
+Date: Thu, 19 Nov 2020 17:09:41 +0530
+Subject: [PATCH 09/12] Bluetooth: btusb: Define a function to construct
+ firmware filename
+
+Define a new function to construct firmware/ddc filename for new
+generation Intel controllers
+
+Signed-off-by: Kiran K <kiran.k@intel.com>
+Signed-off-by: Marcel Holtmann <marcel@holtmann.org>
+Signed-off-by: Johan Hedberg <johan.hedberg@intel.com>
+---
+ drivers/bluetooth/btintel.h |  6 ++++++
+ drivers/bluetooth/btusb.c   | 22 ++++++++++++++++------
+ 2 files changed, 22 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/bluetooth/btintel.h b/drivers/bluetooth/btintel.h
+index 3402472d968f..d184064a5e7c 100644
+--- a/drivers/bluetooth/btintel.h
++++ b/drivers/bluetooth/btintel.h
+@@ -132,6 +132,12 @@ struct intel_debug_features {
+ 	__u8    page1[16];
+ } __packed;
+ 
++#define INTEL_HW_PLATFORM(cnvx_bt)	((u8)(((cnvx_bt) & 0x0000ff00) >> 8))
++#define INTEL_HW_VARIANT(cnvx_bt)	((u8)(((cnvx_bt) & 0x003f0000) >> 16))
++#define INTEL_CNVX_TOP_TYPE(cnvx_top)	((cnvx_top) & 0x00000fff)
++#define INTEL_CNVX_TOP_STEP(cnvx_top)	(((cnvx_top) & 0x0f000000) >> 24)
++#define INTEL_CNVX_TOP_PACK_SWAB(t, s)	__swab16(((__u16)(((t) << 4) | (s))))
++
+ #if IS_ENABLED(CONFIG_BT_INTEL)
+ 
+ int btintel_check_bdaddr(struct hci_dev *hdev);
+diff --git a/drivers/bluetooth/btusb.c b/drivers/bluetooth/btusb.c
+index cfec8e72a5cd..7a32c73aae68 100644
+--- a/drivers/bluetooth/btusb.c
++++ b/drivers/bluetooth/btusb.c
+@@ -2535,6 +2535,21 @@ static int btusb_intel_download_firmware_newgen(struct hci_dev *hdev,
+ 	return err;
+ }
+ 
++static void btusb_setup_intel_newgen_get_fw_name(const struct intel_version_tlv *ver_tlv,
++						 char *fw_name, size_t len,
++						 const char *suffix)
++{
++	/* The firmware file name for new generation controllers will be
++	 * ibt-<cnvi_top type+cnvi_top step>-<cnvr_top type+cnvr_top step>
++	 */
++	snprintf(fw_name, len, "intel/ibt-%04x-%04x.%s",
++		 INTEL_CNVX_TOP_PACK_SWAB(INTEL_CNVX_TOP_TYPE(ver_tlv->cnvi_top),
++					  INTEL_CNVX_TOP_STEP(ver_tlv->cnvi_top)),
++		 INTEL_CNVX_TOP_PACK_SWAB(INTEL_CNVX_TOP_TYPE(ver_tlv->cnvr_top),
++					  INTEL_CNVX_TOP_STEP(ver_tlv->cnvr_top)),
++		 suffix);
++}
++
+ static int btusb_intel_download_firmware(struct hci_dev *hdev,
+ 					 struct intel_version *ver,
+ 					 struct intel_boot_params *params,
+@@ -2945,11 +2960,9 @@ static int btusb_setup_intel_newgen(struct hci_dev *hdev)
+ 
+ 	clear_bit(BTUSB_BOOTLOADER, &data->flags);
+ 
+-<<<<<<< HEAD
+ 	btusb_setup_intel_newgen_get_fw_name(&version, ddcname, sizeof(ddcname),
+ 					     "ddc");
+-=======
+->>>>>>> 0a3c1d45eca0 (Bluetooth: btusb: Add *setup* function for new generation Intel controllers)
++
+ 	/* Once the device is running in operational mode, it needs to
+ 	 * apply the device configuration (DDC) parameters.
+ 	 *
+@@ -2985,10 +2998,7 @@ static int btusb_setup_intel_newgen(struct hci_dev *hdev)
+ 
+ 	return 0;
+ }
+-<<<<<<< HEAD
+ 
+-=======
+->>>>>>> 0a3c1d45eca0 (Bluetooth: btusb: Add *setup* function for new generation Intel controllers)
+ static int btusb_shutdown_intel(struct hci_dev *hdev)
+ {
+ 	struct sk_buff *skb;
+-- 
+2.43.0
+

@@ -1,0 +1,331 @@
+From 2833c256aec19386730082ed68f2911fba3e938f Mon Sep 17 00:00:00 2001
+From: Luiz Augusto von Dentz <luiz.von.dentz@intel.com>
+Date: Tue, 23 Mar 2021 11:58:58 -0700
+Subject: [PATCH 03/12] Bluetooth: btintel: Consolidate intel_version_tlv
+ parsing
+
+This moves version checks of intel_version_tlv() to btintel_version_info_tlv().
+
+Signed-off-by: Luiz Augusto von Dentz <luiz.von.dentz@intel.com>
+Tested-by: Tedd Ho-Jeong An <tedd.an@intel.com>
+Signed-off-by: Marcel Holtmann <marcel@holtmann.org>
+---
+ drivers/bluetooth/btintel.c |  50 +++++++++-
+ drivers/bluetooth/btintel.h |   7 +-
+ drivers/bluetooth/btusb.c   | 183 ++++++++++++++++++++++++++----------
+ 3 files changed, 181 insertions(+), 59 deletions(-)
+
+diff --git a/drivers/bluetooth/btintel.c b/drivers/bluetooth/btintel.c
+index 13bc93a986c7..bb2546c4374a 100644
+--- a/drivers/bluetooth/btintel.c
++++ b/drivers/bluetooth/btintel.c
+@@ -372,10 +372,53 @@ int btintel_read_version(struct hci_dev *hdev, struct intel_version *ver)
+ }
+ EXPORT_SYMBOL_GPL(btintel_read_version);
+ 
+-void btintel_version_info_tlv(struct hci_dev *hdev, struct intel_version_tlv *version)
++int btintel_version_info_tlv(struct hci_dev *hdev, struct intel_version_tlv *version)
+ {
+ 	const char *variant;
+ 
++	/* The hardware platform number has a fixed value of 0x37 and
++	 * for now only accept this single value.
++	 */
++	if (INTEL_HW_PLATFORM(version->cnvi_bt) != 0x37) {
++		bt_dev_err(hdev, "Unsupported Intel hardware platform (0x%2x)",
++			   INTEL_HW_PLATFORM(version->cnvi_bt));
++		return -EINVAL;
++	}
++
++	/* Check for supported iBT hardware variants of this firmware
++	 * loading method.
++	 *
++	 * This check has been put in place to ensure correct forward
++	 * compatibility options when newer hardware variants come along.
++	 */
++	switch (INTEL_HW_VARIANT(version->cnvi_bt)) {
++	case 0x17:	/* TyP */
++	case 0x18:	/* Slr */
++	case 0x19:	/* Slr-F */
++		break;
++	default:
++		bt_dev_err(hdev, "Unsupported Intel hardware variant (0x%x)",
++			   INTEL_HW_VARIANT(version->cnvi_bt));
++		return -EINVAL;
++	}
++
++	/* It is required that every single firmware fragment is acknowledged
++	 * with a command complete event. If the boot parameters indicate
++	 * that this bootloader does not send them, then abort the setup.
++	 */
++	if (version->limited_cce != 0x00) {
++		bt_dev_err(hdev, "Unsupported Intel firmware loading method (0x%x)",
++			   version->limited_cce);
++		return -EINVAL;
++	}
++
++	/* Secure boot engine type should be either 1 (ECDSA) or 0 (RSA) */
++	if (version->sbe_type > 0x01) {
++		bt_dev_err(hdev, "Unsupported Intel secure boot engine type (0x%x)",
++			   version->sbe_type);
++		return -EINVAL;
++	}
++
+ 	switch (version->img_type) {
+ 	case 0x01:
+ 		variant = "Bootloader";
+@@ -397,15 +440,14 @@ void btintel_version_info_tlv(struct hci_dev *hdev, struct intel_version_tlv *ve
+ 		break;
+ 	default:
+ 		bt_dev_err(hdev, "Unsupported image type(%02x)", version->img_type);
+-		goto done;
++		return -EINVAL;
+ 	}
+ 
+ 	bt_dev_info(hdev, "%s timestamp %u.%u buildtype %u build %u", variant,
+ 		    2000 + (version->timestamp >> 8), version->timestamp & 0xff,
+ 		    version->build_type, version->build_num);
+ 
+-done:
+-	return;
++	return 0;
+ }
+ EXPORT_SYMBOL_GPL(btintel_version_info_tlv);
+ 
+diff --git a/drivers/bluetooth/btintel.h b/drivers/bluetooth/btintel.h
+index ca0eebba02b5..82b14ef43d58 100644
+--- a/drivers/bluetooth/btintel.h
++++ b/drivers/bluetooth/btintel.h
+@@ -143,7 +143,7 @@ int btintel_set_diag_mfg(struct hci_dev *hdev, bool enable);
+ void btintel_hw_error(struct hci_dev *hdev, u8 code);
+ 
+ void btintel_version_info(struct hci_dev *hdev, struct intel_version *ver);
+-void btintel_version_info_tlv(struct hci_dev *hdev, struct intel_version_tlv *version);
++int btintel_version_info_tlv(struct hci_dev *hdev, struct intel_version_tlv *version);
+ int btintel_secure_send(struct hci_dev *hdev, u8 fragment_type, u32 plen,
+ 			const void *param);
+ int btintel_load_ddc_config(struct hci_dev *hdev, const char *ddc_name);
+@@ -210,9 +210,10 @@ static inline void btintel_version_info(struct hci_dev *hdev,
+ {
+ }
+ 
+-static inline void btintel_version_info_tlv(struct hci_dev *hdev,
+-					    struct intel_version_tlv *version)
++static inline int btintel_version_info_tlv(struct hci_dev *hdev,
++					   struct intel_version_tlv *version)
+ {
++	return -EOPNOTSUPP;
+ }
+ 
+ static inline int btintel_secure_send(struct hci_dev *hdev, u8 fragment_type,
+diff --git a/drivers/bluetooth/btusb.c b/drivers/bluetooth/btusb.c
+index 343cbf07ca96..cb51144f4f87 100644
+--- a/drivers/bluetooth/btusb.c
++++ b/drivers/bluetooth/btusb.c
+@@ -2436,15 +2436,6 @@ static int btusb_intel_download_firmware_newgen(struct hci_dev *hdev,
+ 	if (!ver || !boot_param)
+ 		return -EINVAL;
+ 
+-	/* The hardware platform number has a fixed value of 0x37 and
+-	 * for now only accept this single value.
+-	 */
+-	if (INTEL_HW_PLATFORM(ver->cnvi_bt) != 0x37) {
+-		bt_dev_err(hdev, "Unsupported Intel hardware platform (0x%2x)",
+-			   INTEL_HW_PLATFORM(ver->cnvi_bt));
+-		return -EINVAL;
+-	}
+-
+ 	/* The firmware variant determines if the device is in bootloader
+ 	 * mode or is running operational firmware. The value 0x03 identifies
+ 	 * the bootloader and the value 0x23 identifies the operational
+@@ -2463,49 +2454,6 @@ static int btusb_intel_download_firmware_newgen(struct hci_dev *hdev,
+ 		btintel_check_bdaddr(hdev);
+ 	}
+ 
+-	/* Check for supported iBT hardware variants of this firmware
+-	 * loading method.
+-	 *
+-	 * This check has been put in place to ensure correct forward
+-	 * compatibility options when newer hardware variants come along.
+-	 */
+-	switch (INTEL_HW_VARIANT(ver->cnvi_bt)) {
+-	case 0x17:	/* TyP */
+-	case 0x18:	/* Slr */
+-	case 0x19:	/* Slr-F */
+-		break;
+-	default:
+-		bt_dev_err(hdev, "Unsupported Intel hardware variant (0x%x)",
+-			   INTEL_HW_VARIANT(ver->cnvi_bt));
+-		return -EINVAL;
+-	}
+-
+-	/* If the device is not in bootloader mode, then the only possible
+-	 * choice is to return an error and abort the device initialization.
+-	 */
+-	if (ver->img_type != 0x01) {
+-		bt_dev_err(hdev, "Unsupported Intel firmware variant (0x%x)",
+-			   ver->img_type);
+-		return -ENODEV;
+-	}
+-
+-	/* It is required that every single firmware fragment is acknowledged
+-	 * with a command complete event. If the boot parameters indicate
+-	 * that this bootloader does not send them, then abort the setup.
+-	 */
+-	if (ver->limited_cce != 0x00) {
+-		bt_dev_err(hdev, "Unsupported Intel firmware loading method (0x%x)",
+-			   ver->limited_cce);
+-		return -EINVAL;
+-	}
+-
+-	/* Secure boot engine type should be either 1 (ECDSA) or 0 (RSA) */
+-	if (ver->sbe_type > 0x01) {
+-		bt_dev_err(hdev, "Unsupported Intel secure boot engine type (0x%x)",
+-			   ver->sbe_type);
+-		return -EINVAL;
+-	}
+-
+ 	/* If the OTP has no valid Bluetooth device address, then there will
+ 	 * also be no valid address for the operational firmware.
+ 	 */
+@@ -2907,6 +2855,137 @@ static int btusb_setup_intel_new(struct hci_dev *hdev)
+ 	return 0;
+ }
+ 
++static int btusb_setup_intel_newgen(struct hci_dev *hdev)
++{
++	struct btusb_data *data = hci_get_drvdata(hdev);
++	u32 boot_param;
++	char ddcname[64];
++	ktime_t calltime, delta, rettime;
++	unsigned long long duration;
++	int err;
++	struct intel_debug_features features;
++	struct intel_version_tlv version;
++
++	bt_dev_dbg(hdev, "");
++
++	/* Set the default boot parameter to 0x0 and it is updated to
++	 * SKU specific boot parameter after reading Intel_Write_Boot_Params
++	 * command while downloading the firmware.
++	 */
++	boot_param = 0x00000000;
++
++	calltime = ktime_get();
++
++	/* Read the Intel version information to determine if the device
++	 * is in bootloader mode or if it already has operational firmware
++	 * loaded.
++	 */
++	err = btintel_read_version_tlv(hdev, &version);
++	if (err) {
++		bt_dev_err(hdev, "Intel Read version failed (%d)", err);
++		btintel_reset_to_bootloader(hdev);
++		return err;
++	}
++
++	err = btintel_version_info_tlv(hdev, &version);
++	if (err)
++		return err;
++
++	err = btusb_intel_download_firmware_newgen(hdev, &version, &boot_param);
++	if (err)
++		return err;
++
++	/* check if controller is already having an operational firmware */
++	if (version.img_type == 0x03)
++		goto finish;
++
++	rettime = ktime_get();
++	delta = ktime_sub(rettime, calltime);
++	duration = (unsigned long long)ktime_to_ns(delta) >> 10;
++
++	bt_dev_info(hdev, "Firmware loaded in %llu usecs", duration);
++
++	calltime = ktime_get();
++
++	set_bit(BTUSB_BOOTING, &data->flags);
++
++	err = btintel_send_intel_reset(hdev, boot_param);
++	if (err) {
++		bt_dev_err(hdev, "Intel Soft Reset failed (%d)", err);
++		btintel_reset_to_bootloader(hdev);
++		return err;
++	}
++
++	/* The bootloader will not indicate when the device is ready. This
++	 * is done by the operational firmware sending bootup notification.
++	 *
++	 * Booting into operational firmware should not take longer than
++	 * 1 second. However if that happens, then just fail the setup
++	 * since something went wrong.
++	 */
++	bt_dev_info(hdev, "Waiting for device to boot");
++
++	err = wait_on_bit_timeout(&data->flags, BTUSB_BOOTING,
++				  TASK_INTERRUPTIBLE,
++				  msecs_to_jiffies(1000));
++
++	if (err == -EINTR) {
++		bt_dev_err(hdev, "Device boot interrupted");
++		return -EINTR;
++	}
++
++	if (err) {
++		bt_dev_err(hdev, "Device boot timeout");
++		btintel_reset_to_bootloader(hdev);
++		return -ETIMEDOUT;
++	}
++
++	rettime = ktime_get();
++	delta = ktime_sub(rettime, calltime);
++	duration = (unsigned long long)ktime_to_ns(delta) >> 10;
++
++	bt_dev_info(hdev, "Device booted in %llu usecs", duration);
++
++	clear_bit(BTUSB_BOOTLOADER, &data->flags);
++
++	btusb_setup_intel_newgen_get_fw_name(&version, ddcname, sizeof(ddcname),
++					     "ddc");
++	/* Once the device is running in operational mode, it needs to
++	 * apply the device configuration (DDC) parameters.
++	 *
++	 * The device can work without DDC parameters, so even if it
++	 * fails to load the file, no need to fail the setup.
++	 */
++	btintel_load_ddc_config(hdev, ddcname);
++
++	/* Read the Intel supported features and if new exception formats
++	 * supported, need to load the additional DDC config to enable.
++	 */
++	btintel_read_debug_features(hdev, &features);
++
++	/* Set DDC mask for available debug features */
++	btintel_set_debug_features(hdev, &features);
++
++	/* Read the Intel version information after loading the FW  */
++	err = btintel_read_version_tlv(hdev, &version);
++	if (err)
++		return err;
++
++	btintel_version_info_tlv(hdev, &version);
++
++finish:
++	/* Set the event mask for Intel specific vendor events. This enables
++	 * a few extra events that are useful during general operation. It
++	 * does not enable any debugging related events.
++	 *
++	 * The device will function correctly without these events enabled
++	 * and thus no need to fail the setup.
++	 */
++	btintel_set_event_mask(hdev, false);
++
++	return 0;
++}
++
+ static int btusb_shutdown_intel(struct hci_dev *hdev)
+ {
+ 	struct sk_buff *skb;
+-- 
+2.43.0
+
